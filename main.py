@@ -19,10 +19,13 @@ from app.routes.websocket_routes import router as router_ws
 load_dotenv()
 
 # Orígenes permitidos para CORS (desde .env o valor por defecto)
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:3000"
-).split(",")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+]
 
 
 @asynccontextmanager
