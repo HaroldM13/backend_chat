@@ -1,26 +1,39 @@
 """
-Esquemas Pydantic para autenticación (registro y login).
+Esquemas Pydantic para autenticación (registro y login con OTP).
 """
 from pydantic import BaseModel, Field
 
 
+class EnviarOTPSchema(BaseModel):
+    """Solicitud de envío de código OTP al teléfono."""
+    telefono: str = Field(..., min_length=7, max_length=20, description="Número de teléfono")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {"telefono": "3001234567"}
+        }
+    }
+
+
 class RegistroSchema(BaseModel):
-    """Datos requeridos para registrar un nuevo usuario."""
+    """Datos requeridos para registrar un nuevo usuario (incluye código OTP)."""
     nombre: str = Field(..., min_length=2, max_length=50, description="Nombre visible del usuario")
     telefono: str = Field(..., min_length=7, max_length=20, description="Número de teléfono único")
+    codigo: str = Field(..., min_length=4, max_length=10, description="Código OTP recibido por SMS")
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "nombre": "Juan Hernández",
-                "telefono": "3001234567"
+                "telefono": "3001234567",
+                "codigo": "123456"
             }
         }
     }
 
 
 class LoginSchema(BaseModel):
-    """Datos requeridos para iniciar sesión."""
+    """Datos requeridos para iniciar sesión (solo teléfono)."""
     telefono: str = Field(..., min_length=7, max_length=20, description="Número de teléfono")
 
     model_config = {

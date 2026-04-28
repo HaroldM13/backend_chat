@@ -2,16 +2,50 @@
 Endpoints de autenticación: registro, login y logout.
 """
 from fastapi import APIRouter, HTTPException, status, Request, Depends
-from app.schemas.auth import RegistroSchema, LoginSchema, TokenSchema
+from app.schemas.auth import EnviarOTPSchema, RegistroSchema, LoginSchema, TokenSchema
 from app.models.usuario import UsuarioModel
 from app.models.sesion import SesionModel
 from app.services.auth_service import crear_token, invalidar_sesion
 from app.services.redis_service import cachear_sesion
+from app.services.twilio_service import enviar_otp, verificar_otp
 from app.services.log_service import registrar_log
 from app.middleware.auth_middleware import obtener_usuario_actual
 from app.database import get_db
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
+
+
+@router.post(
+    "/enviar-otp",
+    status_code=status.HTTP_200_OK,
+    summary="Enviar código OTP por SMS",
+    description="Envía un código de verificación al número de teléfono indicado."
+)
+async def enviar_codigo(datos: EnviarOTPSchema, request: Request):
+    """Envía un OTP via Twilio Verify al teléfono del usuario."""
+    db = get_db()
+    ip = request.client.host if request.client else "desconocida"
+
+    # Verificar si el teléfono ya está registrado antes de gastar el SMS
+    existente = await db.usuarios.find_one({"telefono": datos.telefono})
+    if existente:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El número de teléfono ya está registrado"
+        )
+
+    try:
+        await enviar_otp(datos.telefono)
+        await registrar_log("OTP_SENT", "success", ip,
+                            details={"telefono": datos.telefono})
+        return {"mensaje": "Código enviado"}
+    except Exception:
+        await registrar_log("OTP_SENT", "error", ip,
+                            details={"telefono": datos.telefono})
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo enviar el código. Intenta de nuevo."
+        )
 
 
 @router.post(
@@ -22,9 +56,17 @@ router = APIRouter(prefix="/auth", tags=["Autenticación"])
     description="Crea un usuario con nombre y teléfono. El teléfono debe ser único."
 )
 async def registro(datos: RegistroSchema, request: Request):
-    """Registra un nuevo usuario y retorna un JWT."""
+    """Registra un nuevo usuario verificando el código OTP primero."""
     db = get_db()
     ip = request.client.host if request.client else "desconocida"
+
+    # Verificar el código OTP antes de crear el usuario
+    otp_valido = await verificar_otp(datos.telefono, datos.codigo)
+    if not otp_valido:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código incorrecto o expirado"
+        )
 
     # Verificar que el teléfono no esté registrado
     existente = await db.usuarios.find_one({"telefono": datos.telefono})
@@ -76,7 +118,7 @@ async def registro(datos: RegistroSchema, request: Request):
     description="Autentica al usuario por número de teléfono y retorna un JWT."
 )
 async def login(datos: LoginSchema, request: Request):
-    """Inicia sesión con número de teléfono."""
+    """Inicia sesión verificando el código OTP primero."""
     db = get_db()
     ip = request.client.host if request.client else "desconocida"
 
