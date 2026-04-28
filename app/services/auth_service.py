@@ -39,18 +39,32 @@ def verificar_token(token: str) -> Optional[dict]:
 
 async def sesion_activa(token: str) -> bool:
     """
-    Verifica que la sesión exista en MongoDB y esté marcada como activa.
-    Esto permite invalidar tokens en logout sin esperar su expiración.
+    Verifica que la sesión esté activa usando Redis como cache.
+    1. Busca en Redis (O(1), sin I/O de disco).
+    2. Si no está en cache, consulta MongoDB y cachea el resultado.
+    Esto evita una query a MongoDB en cada request y conexión WebSocket.
     """
+    from app.services.redis_service import sesion_en_cache, cachear_sesion
+
+    if await sesion_en_cache(token):
+        return True
+
     db = get_db()
     sesion = await db.sesiones.find_one({"token": token, "activo": True})
-    return sesion is not None
+    if sesion:
+        await cachear_sesion(token)
+        return True
+
+    return False
 
 
 async def invalidar_sesion(token: str) -> None:
-    """Marca la sesión como inactiva (logout)."""
+    """Marca la sesión como inactiva en MongoDB y la elimina del cache Redis."""
+    from app.services.redis_service import invalidar_sesion_cache
+
     db = get_db()
     await db.sesiones.update_one(
         {"token": token},
         {"$set": {"activo": False}}
     )
+    await invalidar_sesion_cache(token)

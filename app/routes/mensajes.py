@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
 from bson import ObjectId
 from app.middleware.auth_middleware import obtener_usuario_actual
 from app.websocket.manager import manager
+from app.services.rabbit_service import publicar_mensaje
 from app.database import get_db
 
 router = APIRouter(prefix="/mensajes", tags=["Mensajes"])
@@ -96,10 +97,10 @@ async def marcar_leidos(
         {"$set": {"leido": True}}
     )
 
-    # Notificar al remitente por WebSocket que sus mensajes fueron leídos
+    # Notificar al remitente que sus mensajes fueron leídos (via RabbitMQ → broadcast)
     if resultado.modified_count > 0:
         sala = manager.clave_privada(usuario_id, otro_usuario_id)
-        await manager.broadcast(sala, {
+        await publicar_mensaje(sala, {
             "tipo": "mensajes_leidos",
             "lector_id": usuario_id,
             "remitente_id": otro_usuario_id

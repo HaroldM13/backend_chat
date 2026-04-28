@@ -7,3 +7,5 @@ passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 pydantic[email]==2.7.1
 python-multipart==0.0.9
+redis[asyncio]==5.0.4
+aio-pika==9.4.1

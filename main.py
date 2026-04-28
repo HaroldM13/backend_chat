@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.database import conectar_db, cerrar_db
+from app.services.redis_service import conectar_redis, cerrar_redis
+from app.services.rabbit_service import conectar_rabbit, cerrar_rabbit, iniciar_consumer
 from app.routes.auth import router as router_auth
 from app.routes.usuarios import router as router_usuarios
 from app.routes.contactos import router as router_contactos
@@ -32,11 +34,18 @@ ALLOWED_ORIGINS = [
 async def lifespan(app: FastAPI):
     """
     Gestiona el ciclo de vida de la aplicación:
-    - Al iniciar: conecta a MongoDB
-    - Al apagar: cierra la conexión
+    - Al iniciar: conecta a MongoDB, Redis y RabbitMQ; lanza el consumer
+    - Al apagar: cierra todas las conexiones en orden inverso
     """
     await conectar_db()
+    await conectar_redis()
+    print("Conectado a Redis")
+    await conectar_rabbit()
+    await iniciar_consumer()
+    print("Conectado a RabbitMQ y consumer activo")
     yield
+    await cerrar_rabbit()
+    await cerrar_redis()
     await cerrar_db()
 
 

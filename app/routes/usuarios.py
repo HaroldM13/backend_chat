@@ -91,7 +91,7 @@ async def ver_presencia(
     usuario_actual: dict = Depends(obtener_usuario_actual)
 ):
     """Consulta si un usuario está conectado actualmente."""
-    return {"conectado": manager.esta_conectado(usuario_id), "usuario_id": usuario_id}
+    return {"conectado": await manager.esta_conectado(usuario_id), "usuario_id": usuario_id}
 
 
 @router.get("/buscar/{telefono}", summary="Buscar usuario por teléfono")

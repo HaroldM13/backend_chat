@@ -8,6 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from bson import ObjectId
 from app.websocket.manager import manager
 from app.services.auth_service import verificar_token, sesion_activa
+from app.services.rabbit_service import publicar_mensaje
 from app.services.log_service import registrar_log
 from app.models.mensaje import MensajeModel
 from app.database import get_db
@@ -59,7 +60,7 @@ async def ws_sala_general(
             doc = MensajeModel.nuevo("sala", usuario_id, contenido)
             resultado = await db.mensajes.insert_one(doc)
 
-            await manager.broadcast(sala, {
+            await publicar_mensaje(sala, {
                 "id": str(resultado.inserted_id),
                 "tipo": "sala",
                 "remitente_id": usuario_id,
@@ -116,7 +117,7 @@ async def ws_privado(
 
             # Soporte para evento de "marcar como leído" desde el cliente
             if msg_json.get("tipo") == "leido":
-                await manager.broadcast(sala, {
+                await publicar_mensaje(sala, {
                     "tipo": "mensajes_leidos",
                     "lector_id": usuario_id,
                     "remitente_id": destinatario_id
@@ -131,7 +132,7 @@ async def ws_privado(
                                      destinatario_id=destinatario_id)
             resultado = await db.mensajes.insert_one(doc)
 
-            await manager.broadcast(sala, {
+            await publicar_mensaje(sala, {
                 "id": str(resultado.inserted_id),
                 "tipo": "privado",
                 "remitente_id": usuario_id,
@@ -195,7 +196,7 @@ async def ws_grupo(
             doc = MensajeModel.nuevo("grupo", usuario_id, contenido, grupo_id=grupo_id)
             resultado = await db.mensajes.insert_one(doc)
 
-            await manager.broadcast(sala, {
+            await publicar_mensaje(sala, {
                 "id": str(resultado.inserted_id),
                 "tipo": "grupo",
                 "remitente_id": usuario_id,

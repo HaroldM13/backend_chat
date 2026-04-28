@@ -7,14 +7,15 @@ Concurrencia controlada con asyncio:
     Protege el diccionario de conexiones activas (salas) contra condiciones de carrera.
     Se adquiere cada vez que se agrega o elimina una conexión del registro.
 
-- asyncio.Lock (lock_presencia):
-    Protege el contador de usuarios conectados (presencia en línea).
-    Separado de lock_conexiones para no bloquear broadcasts mientras se
-    actualiza la presencia.
-
 - asyncio.Semaphore (sem_broadcast):
     Limita el número de broadcasts simultáneos al máximo definido en MAX_BROADCASTS.
     Evita saturar el event loop con demasiadas corrutinas de envío al mismo tiempo.
+
+- Redis (presencia):
+    El tracking de usuarios conectados usa Redis en lugar de un dict in-memory.
+    Las operaciones INCR/DECR son atómicas, lo que elimina la necesidad de
+    lock_presencia. La presencia persiste ante reinicios del servidor y es
+    compatible con despliegues multi-instancia.
 """
 import asyncio
 from typing import Dict, Set
@@ -37,16 +38,8 @@ class ConnectionManager:
     def __init__(self):
         self.salas: Dict[str, Set[WebSocket]] = {}
 
-        # Presencia: user_id → número de conexiones WS activas
-        # Un usuario puede estar en múltiples salas simultáneamente
-        self.usuarios_conectados: Dict[str, int] = {}
-
         # Lock para modificaciones al mapa de salas (broadcast seguro)
         self.lock_conexiones: asyncio.Lock = asyncio.Lock()
-
-        # Lock separado para el contador de presencia
-        # Evita que actualizar presencia bloquee operaciones de sala
-        self.lock_presencia: asyncio.Lock = asyncio.Lock()
 
         # Semáforo para limitar broadcasts concurrentes
         self.sem_broadcast: asyncio.Semaphore = asyncio.Semaphore(MAX_BROADCASTS)
@@ -69,30 +62,24 @@ class ConnectionManager:
 
     async def usuario_conectado(self, usuario_id: str) -> None:
         """
-        Incrementa el contador de conexiones del usuario.
-        Protegido con lock_presencia para evitar condiciones de carrera
-        cuando el mismo usuario abre múltiples pestañas o salas.
+        Registra al usuario como online en Redis.
+        Incrementa su contador de conexiones activas (soporta múltiples pestañas).
+        La operación INCR de Redis es atómica, sin necesidad de lock adicional.
         """
-        async with self.lock_presencia:
-            self.usuarios_conectados[usuario_id] = (
-                self.usuarios_conectados.get(usuario_id, 0) + 1
-            )
+        from app.services.redis_service import marcar_online
+        await marcar_online(usuario_id)
 
     async def usuario_desconectado(self, usuario_id: str) -> None:
         """
-        Decrementa el contador. Cuando llega a 0, el usuario queda offline.
-        Protegido con lock_presencia.
+        Decrementa el contador en Redis. Cuando llega a 0, el usuario queda offline.
         """
-        async with self.lock_presencia:
-            count = self.usuarios_conectados.get(usuario_id, 0)
-            if count <= 1:
-                self.usuarios_conectados.pop(usuario_id, None)
-            else:
-                self.usuarios_conectados[usuario_id] = count - 1
+        from app.services.redis_service import marcar_offline
+        await marcar_offline(usuario_id)
 
-    def esta_conectado(self, usuario_id: str) -> bool:
-        """Retorna True si el usuario tiene al menos una conexión WS activa."""
-        return self.usuarios_conectados.get(usuario_id, 0) > 0
+    async def esta_conectado(self, usuario_id: str) -> bool:
+        """Retorna True si el usuario tiene al menos una conexión WS activa (consulta Redis)."""
+        from app.services.redis_service import esta_online
+        return await esta_online(usuario_id)
 
     async def broadcast(self, sala: str, mensaje: dict) -> None:
         """

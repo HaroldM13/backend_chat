@@ -6,6 +6,7 @@ from app.schemas.auth import RegistroSchema, LoginSchema, TokenSchema
 from app.models.usuario import UsuarioModel
 from app.models.sesion import SesionModel
 from app.services.auth_service import crear_token, invalidar_sesion
+from app.services.redis_service import cachear_sesion
 from app.services.log_service import registrar_log
 from app.middleware.auth_middleware import obtener_usuario_actual
 from app.database import get_db
@@ -47,9 +48,10 @@ async def registro(datos: RegistroSchema, request: Request):
     # Generar token JWT
     token = crear_token({"sub": usuario_id, "telefono": datos.telefono})
 
-    # Guardar sesión activa
+    # Guardar sesión activa en MongoDB y cachear en Redis
     doc_sesion = SesionModel.nueva(usuario_id, token)
     await db.sesiones.insert_one(doc_sesion)
+    await cachear_sesion(token)
 
     # Auditoría
     await registrar_log(
@@ -97,9 +99,10 @@ async def login(datos: LoginSchema, request: Request):
     # Generar nuevo token
     token = crear_token({"sub": usuario_id, "telefono": datos.telefono})
 
-    # Guardar sesión activa
+    # Guardar sesión activa en MongoDB y cachear en Redis
     doc_sesion = SesionModel.nueva(usuario_id, token)
     await db.sesiones.insert_one(doc_sesion)
+    await cachear_sesion(token)
 
     # Auditoría
     await registrar_log(
