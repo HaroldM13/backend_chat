@@ -23,7 +23,8 @@ class MensajeModel:
         remitente_id: str,
         contenido: str,
         destinatario_id: Optional[str] = None,
-        grupo_id: Optional[str] = None
+        grupo_id: Optional[str] = None,
+        subtipo: Optional[str] = None,
     ) -> dict:
         """Crea un diccionario listo para insertar en MongoDB."""
         doc = {
@@ -36,4 +37,6 @@ class MensajeModel:
             doc["destinatario_id"] = destinatario_id
         if grupo_id:
             doc["grupo_id"] = grupo_id
+        if subtipo:
+            doc["subtipo"] = subtipo  # 'imagen' para mensajes con imagen
         return doc

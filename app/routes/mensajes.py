@@ -1,12 +1,21 @@
 """
-Endpoints HTTP para historial, marcar como leído y eliminar conversación privada.
+Endpoints HTTP para historial, marcar como leído, eliminar conversación e imágenes.
 """
-from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
+import io
+import uuid
+import pathlib
+from datetime import datetime, timezone
+from typing import Optional
+from fastapi import APIRouter, HTTPException, status, Depends, Query, Request, UploadFile, File, Form
+from PIL import Image
 from bson import ObjectId
 from app.middleware.auth_middleware import obtener_usuario_actual
 from app.websocket.manager import manager
 from app.services.rabbit_service import publicar_mensaje
+from app.models.mensaje import MensajeModel
 from app.database import get_db
+
+UPLOADS_CHAT = pathlib.Path("uploads/chat")
 
 router = APIRouter(prefix="/mensajes", tags=["Mensajes"])
 
@@ -25,6 +34,7 @@ async def _enriquecer_mensajes(db, mensajes: list) -> list:
         resultado.append({
             "id": str(msg["_id"]),
             "tipo": msg["tipo"],
+            "subtipo": msg.get("subtipo"),   # None para texto, "imagen" para imágenes
             "remitente_id": rid,
             "nombre_remitente": cache[rid],
             "contenido": msg["contenido"],
@@ -138,6 +148,88 @@ async def eliminar_chat_privado(
         "mensaje": "Conversación eliminada para ambos usuarios",
         "mensajes_eliminados": resultado.deleted_count
     }
+
+
+@router.post("/imagen", status_code=status.HTTP_201_CREATED, summary="Enviar imagen en el chat")
+async def enviar_imagen(
+    archivo: UploadFile = File(...),
+    tipo_chat: str = Form(...),                    # sala | privado | grupo
+    destinatario_id: Optional[str] = Form(None),
+    grupo_id: Optional[str] = Form(None),
+    usuario_actual: dict = Depends(obtener_usuario_actual)
+):
+    """Recibe una imagen, la comprime con Pillow y la guarda. Publica el mensaje vía RabbitMQ."""
+    db = get_db()
+    usuario_id = usuario_actual["sub"]
+
+    if tipo_chat not in ("sala", "privado", "grupo"):
+        raise HTTPException(status_code=400, detail="tipo_chat inválido")
+    if not archivo.content_type or not archivo.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
+
+    # Leer y comprimir con Pillow
+    datos = await archivo.read()
+    try:
+        img = Image.open(io.BytesIO(datos)).convert("RGB")
+        img.thumbnail((1200, 1200), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75, optimize=True)
+        datos_comprimidos = buf.getvalue()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Imagen inválida o corrupta")
+
+    # Guardar en disco
+    nombre_archivo = f"{uuid.uuid4().hex}.jpg"
+    ruta = UPLOADS_CHAT / nombre_archivo
+    ruta.write_bytes(datos_comprimidos)
+    url = f"/uploads/chat/{nombre_archivo}"
+
+    # Obtener nombre del remitente
+    from bson import ObjectId as ObjId
+    usuario = await db.usuarios.find_one({"_id": ObjId(usuario_id)})
+    nombre = usuario["nombre"] if usuario else "Desconocido"
+
+    # Guardar en MongoDB
+    doc = MensajeModel.nuevo(
+        tipo=tipo_chat,
+        remitente_id=usuario_id,
+        contenido=url,
+        destinatario_id=destinatario_id if tipo_chat == "privado" else None,
+        grupo_id=grupo_id if tipo_chat == "grupo" else None,
+        subtipo="imagen",
+    )
+    if tipo_chat == "privado":
+        doc["leido"] = False
+    resultado = await db.mensajes.insert_one(doc)
+    msg_id = str(resultado.inserted_id)
+
+    # Determinar sala para RabbitMQ
+    if tipo_chat == "sala":
+        sala = "sala_general"
+    elif tipo_chat == "privado" and destinatario_id:
+        sala = manager.clave_privada(usuario_id, destinatario_id)
+    elif tipo_chat == "grupo" and grupo_id:
+        sala = manager.clave_grupo(grupo_id)
+    else:
+        raise HTTPException(status_code=400, detail="Faltan parámetros para el tipo de chat")
+
+    payload: dict = {
+        "id": msg_id,
+        "tipo": tipo_chat,
+        "subtipo": "imagen",
+        "remitente_id": usuario_id,
+        "nombre_remitente": nombre,
+        "contenido": url,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if tipo_chat == "privado" and destinatario_id:
+        payload["destinatario_id"] = destinatario_id
+        payload["leido"] = False
+    if tipo_chat == "grupo" and grupo_id:
+        payload["grupo_id"] = grupo_id
+
+    await publicar_mensaje(sala, payload)
+    return payload
 
 
 @router.get("/grupo/{grupo_id}", summary="Historial de mensajes de grupo")
