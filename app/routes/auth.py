@@ -60,13 +60,14 @@ async def registro(datos: RegistroSchema, request: Request):
     db = get_db()
     ip = request.client.host if request.client else "desconocida"
 
-    # Verificar el código OTP antes de crear el usuario
-    otp_valido = await verificar_otp(datos.telefono, datos.codigo)
-    if not otp_valido:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Código incorrecto o expirado"
-        )
+    # Verificar OTP solo si el usuario eligió verificar por SMS
+    if datos.codigo:
+        otp_valido = await verificar_otp(datos.telefono, datos.codigo)
+        if not otp_valido:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Código incorrecto o expirado"
+            )
 
     # Verificar que el teléfono no esté registrado
     existente = await db.usuarios.find_one({"telefono": datos.telefono})
