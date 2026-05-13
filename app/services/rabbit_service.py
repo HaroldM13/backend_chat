@@ -14,6 +14,9 @@ import json
 from typing import Optional
 import aio_pika
 from aio_pika.abc import AbstractRobustConnection, AbstractChannel
+from app.logger import get_logger, request_id_ctx
+
+logger = get_logger(__name__)
 
 _conexion: Optional[AbstractRobustConnection] = None
 _canal: Optional[AbstractChannel] = None
@@ -42,12 +45,14 @@ async def publicar_mensaje(sala: str, mensaje: dict) -> None:
     if _canal is None:
         return
     try:
+        rid = request_id_ctx.get()
         exchange = await _canal.get_exchange(EXCHANGE)
-        body = json.dumps({"sala": sala, "mensaje": mensaje}).encode()
+        body = json.dumps({"sala": sala, "mensaje": mensaje, "_rid": rid}).encode()
         await exchange.publish(
             aio_pika.Message(body, delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
             routing_key=""
         )
+        logger.info("RabbitMQ publicado → sala=%s tipo=%s", sala, mensaje.get("tipo", "?"))
     except Exception:
         pass
 
@@ -78,7 +83,13 @@ async def iniciar_consumer() -> None:
         async with message.process():
             try:
                 data = json.loads(message.body.decode())
-                await manager.broadcast(data["sala"], data["mensaje"])
+                rid = data.get("_rid", "-")
+                token = request_id_ctx.set(rid)
+                try:
+                    logger.info("RabbitMQ consumer → broadcast sala=%s", data["sala"])
+                    await manager.broadcast(data["sala"], data["mensaje"])
+                finally:
+                    request_id_ctx.reset(token)
             except Exception:
                 pass
 

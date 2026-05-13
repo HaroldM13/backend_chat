@@ -11,6 +11,9 @@ from app.services.twilio_service import enviar_otp, verificar_otp
 from app.services.log_service import registrar_log
 from app.middleware.auth_middleware import obtener_usuario_actual
 from app.database import get_db
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
@@ -96,6 +99,8 @@ async def registro(datos: RegistroSchema, request: Request):
     await db.sesiones.insert_one(doc_sesion)
     await cachear_sesion(token)
 
+    logger.info("REGISTRO exitoso usuario=%s nombre=%s ip=%s", usuario_id[:8], datos.nombre, ip)
+
     # Auditoría
     await registrar_log(
         action="USER_REGISTER",
@@ -147,6 +152,8 @@ async def login(datos: LoginSchema, request: Request):
     await db.sesiones.insert_one(doc_sesion)
     await cachear_sesion(token)
 
+    logger.info("LOGIN exitoso usuario=%s ip=%s", usuario_id[:8], ip)
+
     # Auditoría
     await registrar_log(
         action="USER_LOGIN",
@@ -177,6 +184,8 @@ async def logout(request: Request, usuario_actual: dict = Depends(obtener_usuari
 
     # Invalidar la sesión en MongoDB
     await invalidar_sesion(token)
+
+    logger.info("LOGOUT usuario=%s ip=%s", usuario_id[:8], ip)
 
     # Auditoría
     await registrar_log(

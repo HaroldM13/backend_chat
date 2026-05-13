@@ -12,6 +12,9 @@ Servicio Redis: cache de sesiones activas y tracking de presencia de usuarios.
 import os
 from typing import Optional
 import redis.asyncio as aioredis
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 _cliente: Optional[aioredis.Redis] = None
 
@@ -43,6 +46,7 @@ def get_redis() -> aioredis.Redis:
 async def cachear_sesion(token: str) -> None:
     """Guarda el token como sesión activa en Redis con TTL."""
     await get_redis().setex(f"sesion:{token}", SESION_TTL, "1")
+    logger.info("Redis sesion:%s... guardada (TTL %ds)", token[:8], SESION_TTL)
 
 
 async def sesion_en_cache(token: str) -> bool:
@@ -54,13 +58,15 @@ async def sesion_en_cache(token: str) -> bool:
 async def invalidar_sesion_cache(token: str) -> None:
     """Elimina el token del cache Redis al hacer logout."""
     await get_redis().delete(f"sesion:{token}")
+    logger.info("Redis sesion:%s... eliminada", token[:8])
 
 
 # ── Presencia ────────────────────────────────────────────────────────────────
 
 async def marcar_online(usuario_id: str) -> None:
     """Incrementa el contador de conexiones WS activas del usuario."""
-    await get_redis().incr(f"presencia:{usuario_id}")
+    total = await get_redis().incr(f"presencia:{usuario_id}")
+    logger.info("Redis presencia:%s → online (conexiones=%d)", usuario_id[:8], total)
 
 
 async def marcar_offline(usuario_id: str) -> None:
@@ -70,6 +76,9 @@ async def marcar_offline(usuario_id: str) -> None:
     nuevo = await r.decr(key)
     if nuevo <= 0:
         await r.delete(key)
+        logger.info("Redis presencia:%s → offline (clave eliminada)", usuario_id[:8])
+    else:
+        logger.info("Redis presencia:%s → conexiones restantes=%d", usuario_id[:8], nuevo)
 
 
 async def esta_online(usuario_id: str) -> bool:

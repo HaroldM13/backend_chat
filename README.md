@@ -522,66 +522,186 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 ## Instalación y puesta en marcha
 
-### Requisitos previos
+---
 
-- Python 3.10+
-- MongoDB 7.0 (`localhost:27017`)
-- Redis (`localhost:6379`)
-- RabbitMQ (`localhost:5672`)
+### Paso 1 — Requisitos previos
 
-### Instalar y arrancar
+- [Docker](https://docs.docker.com/get-docker/) instalado  
+- El daemon de Docker corriendo:
+  ```bash
+  sudo service docker start
+  docker info   # debe responder sin error
+  ```
+- El archivo `backend_chat/.env` configurado (ver sección **Variables de entorno**).  
+  Las URLs de MongoDB, Redis y RabbitMQ pueden quedarse con `localhost` — Docker las sobreescribe automáticamente.
+
+---
+
+### Paso 2 — Liberar puertos (si tenías los servicios corriendo sin Docker)
+
+Si tienes MongoDB, Redis o RabbitMQ corriendo localmente, deben pararse antes de levantar Docker (ocupan los mismos puertos):
 
 ```bash
-# 1. Entrar al directorio del backend
+sudo service redis-server stop
+sudo rabbitmqctl stop
+~/mongodb/bin/mongod --shutdown --dbpath ~/mongodb/data
+```
+
+---
+
+### Paso 3 — Levantar todo con Docker
+
+> El `docker-compose.yml` está dentro de `backend_chat/` — el mismo lugar donde haces el `git push` del backend. Así cuando alguien clona el repo ya tiene todo lo necesario para levantar la infraestructura completa.
+
+```bash
+# Ir al directorio del backend
 cd project_chat/backend_chat
 
-# 2. Crear y activar entorno virtual
-python3 -m venv venv
-source venv/bin/activate        # Linux / macOS / WSL
-# venv\Scripts\activate         # Windows
+# Primera vez: construye la imagen del backend y descarga las demás imágenes
+docker compose up --build -d
 
-# 3. Instalar dependencias
-pip install -r requirements.txt
-
-# 4. Configurar variables de entorno
-cp .env.example .env
-nano .env   # editar con los valores correctos
-
-# 5. Arrancar el servidor en modo desarrollo
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# Las veces siguientes (sin cambios de código):
+docker compose up -d
 ```
 
-Al arrancar correctamente verás:
-```
-Conectado a MongoDB: jht_chat
-Conectado a Redis
-Conectado a RabbitMQ y consumer activo
-INFO: Application startup complete.
-INFO: Uvicorn running on http://0.0.0.0:8000
+Verifica que todo quedó corriendo:
+```bash
+docker compose ps
 ```
 
-### Arrancar la infraestructura (WSL / Ubuntu)
+Debes ver todos los contenedores en estado `Up`:
+```
+project_chat-backend-1          Up (healthy)
+project_chat-mongodb-1          Up (healthy)
+project_chat-redis-1            Up (healthy)
+project_chat-rabbitmq-1         Up (healthy)
+project_chat-dozzle-1           Up
+project_chat-redis-commander-1  Up (healthy)
+```
+
+Verifica los logs del backend:
+```bash
+docker logs project_chat-backend-1 --tail 8
+# Debe aparecer:
+# INFO  app.database: Conectado a MongoDB: jht_chat
+# INFO  main: Conectado a Redis
+# INFO  main: Conectado a RabbitMQ y consumer activo
+# INFO: Application startup complete.
+```
+
+---
+
+### Paso 4 — URLs para abrir en el navegador
+
+#### Mac, Linux o Windows con Docker Desktop (usa `localhost`)
+
+| Servicio | URL | Notas |
+|---|---|---|
+| **API / Backend** | `http://localhost:8000` | |
+| **Swagger UI** | `http://localhost:8000/docs` | Documentación y prueba de endpoints |
+| **Dozzle** (logs) | `http://localhost:9999` | Logs de todos los contenedores en tiempo real |
+| **RabbitMQ UI** | `http://localhost:15672` | usuario: `guest` / contraseña: `guest` |
+| **Redis Commander** | `http://localhost:8081` | Claves y valores Redis en vivo |
+
+#### WSL2 en Windows (requiere la IP de WSL en lugar de `localhost`)
+
+En WSL2, el navegador de Windows y el backend viven en redes distintas, por lo que `localhost` no siempre funciona. Debes usar la IP interna de WSL.
+
+**Obtener la IP de WSL:**
+```bash
+ip addr show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+# Ejemplo de resultado: 172.21.234.117
+```
+
+Con esa IP, las URLs quedan:
+
+| Servicio | URL (ejemplo con IP `172.21.234.117`) |
+|---|---|
+| **API / Backend** | `http://172.21.234.117:8000` |
+| **Swagger UI** | `http://172.21.234.117:8000/docs` |
+| **Dozzle** (logs) | `http://172.21.234.117:9999` |
+| **RabbitMQ UI** | `http://172.21.234.117:15672` |
+| **Redis Commander** | `http://172.21.234.117:8081` |
+
+> **Importante:** esta IP cambia cada vez que reinicias WSL. Si algo deja de funcionar después de reiniciar, vuelve a ejecutar el comando de arriba y actualiza la IP en los dos archivos que se describen a continuación.
+
+---
+
+### Paso 5 — Ajuste de IPs en WSL2 (solo aplica en WSL)
+
+Cuando cambies la IP de WSL debes actualizarla en **dos archivos**:
+
+#### Archivo 1 — `backend_chat/.env` (línea `ALLOWED_ORIGINS`)
+
+Ruta completa: `project_chat/backend_chat/.env`
+
+```env
+# Cambiar la IP en este origen:
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,http://TU_IP_WSL:5173
+```
+
+Después de cambiarla, recarga el contenedor:
+```bash
+cd project_chat
+docker compose up -d --force-recreate backend
+```
+
+Verifica que el contenedor tomó el cambio:
+```bash
+docker exec project_chat-backend-1 env | grep ALLOWED_ORIGINS
+```
+
+#### Archivo 2 — `frontend_chat/.env` (líneas `VITE_API_URL` y `VITE_WS_URL`)
+
+Ruta completa: `project_chat/frontend_chat/.env`
+
+```env
+VITE_API_URL=http://TU_IP_WSL:8000
+VITE_WS_URL=ws://TU_IP_WSL:8000
+```
+
+Después de cambiarla, reinicia el servidor de Vite (Ctrl+C y volver a correr `npm run dev -- --host`).
+
+---
+
+### Paso 6 — Solución permanente para WSL2 (opcional)
+
+Para no tener que cambiar la IP cada vez que reinicias WSL, ejecuta esto **una sola vez en PowerShell como Administrador** en Windows (reemplazando la IP por la tuya):
+
+```powershell
+netsh interface portproxy add v4tov4 listenport=8000 listenaddress=127.0.0.1 connectport=8000 connectaddress=172.21.234.117
+netsh interface portproxy add v4tov4 listenport=5173 listenaddress=127.0.0.1 connectport=5173 connectaddress=172.21.234.117
+netsh interface portproxy add v4tov4 listenport=9999 listenaddress=127.0.0.1 connectport=9999 connectaddress=172.21.234.117
+netsh interface portproxy add v4tov4 listenport=15672 listenaddress=127.0.0.1 connectport=15672 connectaddress=172.21.234.117
+netsh interface portproxy add v4tov4 listenport=8081 listenaddress=127.0.0.1 connectport=8081 connectaddress=172.21.234.117
+```
+
+Con esto puedes usar `localhost` en todo y los `.env` quedan igual que en cualquier otra máquina.
+
+---
+
+### Comandos Docker útiles
 
 ```bash
-# MongoDB
-sudo systemctl start mongod
-# o manualmente:
-~/mongodb/bin/mongod --dbpath ~/mongodb/data --logpath ~/mongodb/log/mongod.log --fork
+# Ver estado de todos los contenedores
+docker compose ps
 
-# Redis
-redis-server --daemonize yes
-redis-cli ping   # debe responder: PONG
+# Ver logs del backend en tiempo real
+docker compose logs -f backend
 
-# RabbitMQ
-sudo rabbitmq-server -detached
-sudo rabbitmqctl status   # verificar que está corriendo
+# Parar todo (sin borrar datos)
+docker compose down
+
+# Parar todo y borrar la base de datos (MongoDB)
+docker compose down -v
+
+# Reconstruir solo el backend después de cambios de código
+# (correr desde backend_chat/)
+docker compose up --build -d backend
+
+# Recargar el backend después de cambiar el .env
+docker compose up -d --force-recreate backend
 ```
-
-### Documentación interactiva
-
-Con el servidor corriendo:
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
 
 ---
 

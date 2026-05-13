@@ -5,8 +5,11 @@ Motor permite operaciones no bloqueantes compatibles con asyncio/FastAPI.
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+from app.logger import get_logger
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # URI y nombre de la base de datos desde variables de entorno
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
@@ -26,7 +29,7 @@ async def conectar_db():
     await db.usuarios.create_index("telefono", unique=True)
     await db.sesiones.create_index("token")
     await db.logs.create_index("created_at")
-    print(f"Conectado a MongoDB: {DATABASE_NAME}")
+    logger.info("Conectado a MongoDB: %s", DATABASE_NAME)
 
 
 async def cerrar_db():
@@ -34,7 +37,7 @@ async def cerrar_db():
     global client
     if client:
         client.close()
-        print("Conexión a MongoDB cerrada")
+        logger.info("Conexión a MongoDB cerrada")
 
 
 def get_db():

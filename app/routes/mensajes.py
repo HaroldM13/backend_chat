@@ -14,6 +14,9 @@ from app.websocket.manager import manager
 from app.services.rabbit_service import publicar_mensaje
 from app.models.mensaje import MensajeModel
 from app.database import get_db
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 UPLOADS_CHAT = pathlib.Path("uploads/chat")
 
@@ -229,6 +232,7 @@ async def enviar_imagen(
         payload["grupo_id"] = grupo_id
 
     await publicar_mensaje(sala, payload)
+    logger.info("imagen enviada usuario=%s sala=%s archivo=%s", usuario_id[:8], sala, nombre_archivo)
     return payload
 
 

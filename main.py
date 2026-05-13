@@ -3,18 +3,23 @@ Punto de entrada principal de JHT Chat API.
 Configura FastAPI, CORS, ciclo de vida de la app y registra todos los routers.
 """
 import os
+import uuid
 import asyncio
 import pathlib
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
+from app.logger import setup_logging, get_logger, request_id_ctx
 from app.database import conectar_db, cerrar_db
 from app.services.redis_service import conectar_redis, cerrar_redis
 from app.services.rabbit_service import conectar_rabbit, cerrar_rabbit, iniciar_consumer
+
+setup_logging()
+logger = get_logger(__name__)
 from app.routes.auth import router as router_auth
 from app.routes.usuarios import router as router_usuarios
 from app.routes.contactos import router as router_contactos
@@ -67,10 +72,10 @@ async def lifespan(app: FastAPI):
     tarea_limpieza = asyncio.create_task(_limpiar_estados_expirados())
     await conectar_db()
     await conectar_redis()
-    print("Conectado a Redis")
+    logger.info("Conectado a Redis")
     await conectar_rabbit()
     await iniciar_consumer()
-    print("Conectado a RabbitMQ y consumer activo")
+    logger.info("Conectado a RabbitMQ y consumer activo")
     yield
     tarea_limpieza.cancel()
     await cerrar_rabbit()
@@ -92,6 +97,17 @@ app = FastAPI(
     docs_url="/docs",      # Swagger UI
     redoc_url="/redoc"     # ReDoc
 )
+
+@app.middleware("http")
+async def _request_id_middleware(request: Request, call_next):
+    """Asigna un request_id único a cada petición HTTP y lo inyecta en el contexto."""
+    rid = uuid.uuid4().hex[:8]
+    token = request_id_ctx.set(rid)
+    try:
+        return await call_next(request)
+    finally:
+        request_id_ctx.reset(token)
+
 
 # Configuración de CORS para permitir peticiones desde el frontend
 app.add_middleware(
