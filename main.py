@@ -27,6 +27,9 @@ from app.routes.grupos import router as router_grupos
 from app.routes.mensajes import router as router_mensajes
 from app.routes.websocket_routes import router as router_ws
 from app.routes.estados import router as router_estados
+from app.routes.favoritos import router as router_favoritos
+from app.routes.reacciones import router as router_reacciones
+from app.routes.encuestas import router as router_encuestas
 
 load_dotenv()
 
@@ -41,13 +44,15 @@ ALLOWED_ORIGINS = [
 
 
 async def _limpiar_estados_expirados() -> None:
-    """Elimina estados expirados (doc + imagen) cada 60 segundos."""
+    """Elimina estados y mensajes auto-destructibles expirados (doc + archivo) cada 60 segundos."""
     from app.database import get_db
     while True:
         await asyncio.sleep(60)
         try:
             db = get_db()
             ahora = datetime.now(timezone.utc)
+
+            # Limpiar estados expirados
             expirados = await db.estados.find(
                 {"expira_at": {"$lte": ahora}}
             ).to_list(length=None)
@@ -56,6 +61,23 @@ async def _limpiar_estados_expirados() -> None:
                 ruta.unlink(missing_ok=True)
             if expirados:
                 await db.estados.delete_many({"expira_at": {"$lte": ahora}})
+
+            # Limpiar mensajes auto-destructibles expirados
+            msgs_expirados = await db.mensajes.find(
+                {"expira_at": {"$lte": ahora}, "eliminado": {"$ne": True}}
+            ).to_list(length=None)
+            for msg in msgs_expirados:
+                if msg.get("subtipo") in ("imagen", "audio", "video", "archivo"):
+                    url = msg.get("contenido", "")
+                    if url.startswith("/uploads/chat/"):
+                        ruta = pathlib.Path(url.lstrip("/"))
+                        ruta.unlink(missing_ok=True)
+            if msgs_expirados:
+                ids_expirados = [m["_id"] for m in msgs_expirados]
+                await db.mensajes.update_many(
+                    {"_id": {"$in": ids_expirados}},
+                    {"$set": {"eliminado": True, "contenido": ""}},
+                )
         except Exception:
             pass
 
@@ -69,6 +91,7 @@ async def lifespan(app: FastAPI):
     """
     pathlib.Path("uploads/chat").mkdir(parents=True, exist_ok=True)
     pathlib.Path("uploads/estados").mkdir(parents=True, exist_ok=True)
+    pathlib.Path("uploads/perfiles").mkdir(parents=True, exist_ok=True)
     tarea_limpieza = asyncio.create_task(_limpiar_estados_expirados())
     await conectar_db()
     await conectar_redis()
@@ -129,6 +152,9 @@ app.include_router(router_grupos)
 app.include_router(router_mensajes)
 app.include_router(router_ws)
 app.include_router(router_estados)
+app.include_router(router_favoritos)
+app.include_router(router_reacciones)
+app.include_router(router_encuestas)
 
 
 @app.get("/", tags=["Estado"])

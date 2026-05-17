@@ -1,6 +1,7 @@
 """
 Endpoints WebSocket con tracking de presencia en tiempo real.
 Al conectar → usuario_conectado(). Al desconectar → usuario_desconectado().
+Soporta: indicadores de escritura, respuestas a mensajes, mensajes auto-destructibles.
 """
 import json
 import uuid
@@ -10,6 +11,7 @@ from bson import ObjectId
 from app.websocket.manager import manager
 from app.services.auth_service import verificar_token, sesion_activa
 from app.services.rabbit_service import publicar_mensaje
+from app.services.redis_service import guardar_ultima_vez
 from app.services.log_service import registrar_log
 from app.models.mensaje import MensajeModel
 from app.database import get_db
@@ -28,6 +30,30 @@ async def _autenticar_ws(token: str) -> dict | None:
     if not activa:
         return None
     return payload
+
+
+async def _resolver_reply_to(db, reply_to_id: str | None) -> dict | None:
+    """Resuelve el campo reply_to buscando el mensaje original en MongoDB."""
+    if not reply_to_id:
+        return None
+    try:
+        reply_msg = await db.mensajes.find_one({"_id": ObjectId(reply_to_id)})
+        if not reply_msg or reply_msg.get("eliminado"):
+            return None
+        r_uid = reply_msg.get("remitente_id", "")
+        r_nombre = "Desconocido"
+        if r_uid:
+            r_u = await db.usuarios.find_one({"_id": ObjectId(r_uid)})
+            if r_u:
+                r_nombre = r_u["nombre"]
+        return {
+            "id": reply_to_id,
+            "contenido": reply_msg.get("contenido", ""),
+            "nombre_remitente": r_nombre,
+            "subtipo": reply_msg.get("subtipo"),
+        }
+    except Exception:
+        return None
 
 
 @router.websocket("/ws/sala")
@@ -55,30 +81,60 @@ async def ws_sala_general(
             datos = await websocket.receive_text()
             try:
                 msg_json = json.loads(datos)
-                contenido = msg_json.get("contenido", "").strip()
             except json.JSONDecodeError:
-                contenido = datos.strip()
+                msg_json = {"contenido": datos.strip()}
 
+            # Indicadores de escritura — no se persisten
+            if msg_json.get("tipo") == "escribiendo":
+                await publicar_mensaje(sala, {
+                    "tipo": "escribiendo",
+                    "usuario_id": usuario_id,
+                    "nombre_remitente": nombre,
+                })
+                continue
+            if msg_json.get("tipo") == "dejo_escribir":
+                await publicar_mensaje(sala, {
+                    "tipo": "dejo_escribir",
+                    "usuario_id": usuario_id,
+                })
+                continue
+
+            contenido = msg_json.get("contenido", "").strip()
             if not contenido:
                 continue
+
+            reply_to = await _resolver_reply_to(db, msg_json.get("reply_to_id"))
+            expira_en = msg_json.get("expira_en")
+            if isinstance(expira_en, (int, float)) and int(expira_en) > 0:
+                expira_en = int(expira_en)
+            else:
+                expira_en = None
 
             rid = uuid.uuid4().hex[:8]
             token_ctx = request_id_ctx.set(rid)
             try:
-                doc = MensajeModel.nuevo("sala", usuario_id, contenido)
+                doc = MensajeModel.nuevo(
+                    "sala", usuario_id, contenido,
+                    reply_to=reply_to, expira_en=expira_en,
+                )
                 resultado = await db.mensajes.insert_one(doc)
 
                 logger.info("WS mensaje sala_general usuario=%s", usuario_id[:8])
 
-                await publicar_mensaje(sala, {
+                ws_payload: dict = {
                     "id": str(resultado.inserted_id),
                     "tipo": "sala",
                     "remitente_id": usuario_id,
                     "nombre_remitente": nombre,
                     "contenido": contenido,
-                    "created_at": datetime.now(timezone.utc).isoformat()
-                })
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if reply_to:
+                    ws_payload["reply_to"] = reply_to
+                if doc.get("expira_at"):
+                    ws_payload["expira_at"] = doc["expira_at"].isoformat()
 
+                await publicar_mensaje(sala, ws_payload)
                 await registrar_log("MESSAGE_SENT", "success", "ws",
                                     usuario_id, {"sala": "general"})
             finally:
@@ -86,6 +142,7 @@ async def ws_sala_general(
 
     except WebSocketDisconnect:
         await manager.desconectar(websocket, sala)
+        await guardar_ultima_vez(usuario_id)
         await manager.usuario_desconectado(usuario_id)
         logger.info("WS sala_general desconectado usuario=%s", usuario_id[:8])
 
@@ -137,20 +194,45 @@ async def ws_privado(
                 })
                 continue
 
+            # Indicadores de escritura
+            if msg_json.get("tipo") == "escribiendo":
+                await publicar_mensaje(sala, {
+                    "tipo": "escribiendo",
+                    "usuario_id": usuario_id,
+                    "nombre_remitente": nombre,
+                })
+                continue
+            if msg_json.get("tipo") == "dejo_escribir":
+                await publicar_mensaje(sala, {
+                    "tipo": "dejo_escribir",
+                    "usuario_id": usuario_id,
+                })
+                continue
+
             contenido = msg_json.get("contenido", "").strip()
             if not contenido:
                 continue
 
+            reply_to = await _resolver_reply_to(db, msg_json.get("reply_to_id"))
+            expira_en = msg_json.get("expira_en")
+            if isinstance(expira_en, (int, float)) and int(expira_en) > 0:
+                expira_en = int(expira_en)
+            else:
+                expira_en = None
+
             rid = uuid.uuid4().hex[:8]
             token_ctx = request_id_ctx.set(rid)
             try:
-                doc = MensajeModel.nuevo("privado", usuario_id, contenido,
-                                         destinatario_id=destinatario_id)
+                doc = MensajeModel.nuevo(
+                    "privado", usuario_id, contenido,
+                    destinatario_id=destinatario_id,
+                    reply_to=reply_to, expira_en=expira_en,
+                )
                 resultado = await db.mensajes.insert_one(doc)
 
                 logger.info("WS mensaje privado usuario=%s → dest=%s", usuario_id[:8], destinatario_id[:8])
 
-                await publicar_mensaje(sala, {
+                ws_payload = {
                     "id": str(resultado.inserted_id),
                     "tipo": "privado",
                     "remitente_id": usuario_id,
@@ -158,9 +240,14 @@ async def ws_privado(
                     "destinatario_id": destinatario_id,
                     "contenido": contenido,
                     "leido": False,
-                    "created_at": datetime.now(timezone.utc).isoformat()
-                })
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if reply_to:
+                    ws_payload["reply_to"] = reply_to
+                if doc.get("expira_at"):
+                    ws_payload["expira_at"] = doc["expira_at"].isoformat()
 
+                await publicar_mensaje(sala, ws_payload)
                 await registrar_log("PRIVATE_MESSAGE_SENT", "success", "ws",
                                     usuario_id, {"destinatario_id": destinatario_id})
             finally:
@@ -168,6 +255,7 @@ async def ws_privado(
 
     except WebSocketDisconnect:
         await manager.desconectar(websocket, sala)
+        await guardar_ultima_vez(usuario_id)
         await manager.usuario_desconectado(usuario_id)
         logger.info("WS privado desconectado usuario=%s", usuario_id[:8])
 
@@ -208,31 +296,62 @@ async def ws_grupo(
             datos = await websocket.receive_text()
             try:
                 msg_json = json.loads(datos)
-                contenido = msg_json.get("contenido", "").strip()
             except json.JSONDecodeError:
-                contenido = datos.strip()
+                msg_json = {"contenido": datos.strip()}
 
+            # Indicadores de escritura
+            if msg_json.get("tipo") == "escribiendo":
+                await publicar_mensaje(sala, {
+                    "tipo": "escribiendo",
+                    "usuario_id": usuario_id,
+                    "nombre_remitente": nombre,
+                })
+                continue
+            if msg_json.get("tipo") == "dejo_escribir":
+                await publicar_mensaje(sala, {
+                    "tipo": "dejo_escribir",
+                    "usuario_id": usuario_id,
+                })
+                continue
+
+            contenido = msg_json.get("contenido", "").strip()
             if not contenido:
                 continue
+
+            reply_to = await _resolver_reply_to(db, msg_json.get("reply_to_id"))
+            expira_en = msg_json.get("expira_en")
+            if isinstance(expira_en, (int, float)) and int(expira_en) > 0:
+                expira_en = int(expira_en)
+            else:
+                expira_en = None
 
             rid = uuid.uuid4().hex[:8]
             token_ctx = request_id_ctx.set(rid)
             try:
-                doc = MensajeModel.nuevo("grupo", usuario_id, contenido, grupo_id=grupo_id)
+                doc = MensajeModel.nuevo(
+                    "grupo", usuario_id, contenido,
+                    grupo_id=grupo_id,
+                    reply_to=reply_to, expira_en=expira_en,
+                )
                 resultado = await db.mensajes.insert_one(doc)
 
                 logger.info("WS mensaje grupo=%s usuario=%s", grupo_id[:8], usuario_id[:8])
 
-                await publicar_mensaje(sala, {
+                ws_payload = {
                     "id": str(resultado.inserted_id),
                     "tipo": "grupo",
                     "remitente_id": usuario_id,
                     "nombre_remitente": nombre,
                     "grupo_id": grupo_id,
                     "contenido": contenido,
-                    "created_at": datetime.now(timezone.utc).isoformat()
-                })
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if reply_to:
+                    ws_payload["reply_to"] = reply_to
+                if doc.get("expira_at"):
+                    ws_payload["expira_at"] = doc["expira_at"].isoformat()
 
+                await publicar_mensaje(sala, ws_payload)
                 await registrar_log("GROUP_MESSAGE_SENT", "success", "ws",
                                     usuario_id, {"grupo_id": grupo_id})
             finally:
@@ -240,5 +359,6 @@ async def ws_grupo(
 
     except WebSocketDisconnect:
         await manager.desconectar(websocket, sala)
+        await guardar_ultima_vez(usuario_id)
         await manager.usuario_desconectado(usuario_id)
         logger.info("WS grupo=%s desconectado usuario=%s", grupo_id[:8], usuario_id[:8])

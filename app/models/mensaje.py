@@ -2,7 +2,7 @@
 Modelo de datos para la colección 'mensajes' en MongoDB.
 Los mensajes pueden ser de sala general, privados o de grupo.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 
@@ -25,18 +25,29 @@ class MensajeModel:
         destinatario_id: Optional[str] = None,
         grupo_id: Optional[str] = None,
         subtipo: Optional[str] = None,
+        nombre_archivo: Optional[str] = None,
+        reply_to: Optional[dict] = None,
+        expira_en: Optional[int] = None,
     ) -> dict:
         """Crea un diccionario listo para insertar en MongoDB."""
         doc = {
             "tipo": tipo,           # 'sala' | 'privado' | 'grupo'
             "remitente_id": remitente_id,
             "contenido": contenido,
-            "created_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(timezone.utc),
+            "editado": False,
+            "eliminado": False,
         }
         if destinatario_id:
             doc["destinatario_id"] = destinatario_id
         if grupo_id:
             doc["grupo_id"] = grupo_id
         if subtipo:
-            doc["subtipo"] = subtipo  # 'imagen' para mensajes con imagen
+            doc["subtipo"] = subtipo  # 'imagen' | 'audio' | 'video' | 'archivo' | 'encuesta'
+        if nombre_archivo:
+            doc["nombre_archivo"] = nombre_archivo
+        if reply_to:
+            doc["reply_to"] = reply_to
+        if expira_en:
+            doc["expira_at"] = datetime.now(timezone.utc) + timedelta(seconds=expira_en)
         return doc

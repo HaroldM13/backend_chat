@@ -85,3 +85,16 @@ async def esta_online(usuario_id: str) -> bool:
     """Retorna True si el usuario tiene al menos una conexión WS activa."""
     val = await get_redis().get(f"presencia:{usuario_id}")
     return int(val or 0) > 0
+
+
+# ── Última vez visto ─────────────────────────────────────────────────────────
+
+async def guardar_ultima_vez(usuario_id: str) -> None:
+    """Guarda el timestamp UTC en que el usuario se desconectó."""
+    from datetime import datetime, timezone
+    await get_redis().set(f"ultima_vez:{usuario_id}", datetime.now(timezone.utc).isoformat())
+
+
+async def obtener_ultima_vez(usuario_id: str) -> str | None:
+    """Retorna el ISO timestamp de la última desconexión, o None si no existe."""
+    return await get_redis().get(f"ultima_vez:{usuario_id}")
